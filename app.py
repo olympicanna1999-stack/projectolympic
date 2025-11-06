@@ -6,7 +6,6 @@ import random
 from faker import Faker
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-import snowflake.connector
 from datetime import datetime
 
 # ---------- Константы ----------
