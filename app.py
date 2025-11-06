@@ -660,13 +660,12 @@ else:
                         st.error("Нет доступа для обновления")
 
         st.subheader("Визуализации")
-   @st.cache_data
+@st.cache_data
 def visualize_average_metrics(user_info):
     data = get_measurements(user_info)
     if data.empty:
         return None
 
-    # helper: найти реальные имена колонок в DataFrame
     def find_col(df, *candidates):
         cols = [c.lower() for c in df.columns]
         for c in candidates:
@@ -716,11 +715,14 @@ def visualize_average_metrics(user_info):
     except Exception:
         return None
 
-    # найти колонку вида спорта в combined
-    sport_col_in_combined = sport_col if sport_col in combined.columns else (
-        [c for c in combined.columns if 'вид' in str(c).lower() or 'sport' in str(c).lower()][0]
-        if any('вид' in str(c).lower() or 'sport' in str(c).lower() for c in combined.columns) else None
-    )
+    sport_col_in_combined = None
+    for c in combined.columns:
+        if 'вид' in str(c).lower() or 'sport' in str(c).lower():
+            sport_col_in_combined = c
+            break
+    if sport_col_in_combined is None:
+        # fallback to the original sport_col if present
+        sport_col_in_combined = sport_col if sport_col in combined.columns else None
     if sport_col_in_combined is None:
         return None
 
