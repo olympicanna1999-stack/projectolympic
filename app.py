@@ -10,6 +10,101 @@ from reportlab.lib.utils import ImageReader
 from io import BytesIO
 import base64
 
+# ---------------------------
+# In-memory temporary DB stub
+# ---------------------------
+import re
+from contextlib import contextmanager
+
+# initial empty tables
+_inmem_athletes = pd.DataFrame(columns=['id', 'Имя', 'Возраст', 'Вид спорта'])
+_inmem_measurements = pd.DataFrame(columns=['id', 'athlete_id', 'date', 'metric', 'value'])
+
+# simple id counters
+_next_athlete_id = 1
+_next_measurement_id = 1
+
+class InMemorySession:
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def execute(self, sql, params=None):
+        # Normalize
+        s = (sql or "").strip().lower()
+        p = params or {}
+
+        global _inmem_athletes, _inmem_measurements, _next_athlete_id, _next_measurement_id
+
+        # INSERT INTO athletes ("Имя", "Возраст", "Вид спорта") VALUES (:Имя, :Возраст, :Вид_спорта)
+        if 'insert into athletes' in s:
+            # Try to get fields from params
+            # params keys may be in different names depending on caller; handle common ones
+            name = p.get('Имя') or p.get('name') or p.get('Имя'.lower())
+            age = p.get('Возраст') or p.get('age') or p.get('Возраст'.lower())
+            sport = p.get('Вид_спорта') or p.get('Вид спорта') or p.get('sport') or p.get('Вид спорта'.lower())
+            if name is None and isinstance(params, (list, tuple)):
+                # support executemany with positional tuple (unlikely here)
+                pass
+            row = {'id': _next_athlete_id, 'Имя': name, 'Возраст': age, 'Вид спорта': sport}
+            _inmem_athletes = pd.concat([_inmem_athletes, pd.DataFrame([row])], ignore_index=True)
+            _next_athlete_id += 1
+            return
+
+        # INSERT INTO measurements (athlete_id, "Date", metric, value) VALUES (...)
+        if 'insert into measurements' in s:
+            aid = p.get('athlete_id') or p.get('Athlete_ID') or p.get('Athlete_Id') or p.get('Athlete_ID'.lower()) or p.get('Athlete_ID'.replace('_',''))
+            date = p.get('Date') or p.get('date')
+            metric = p.get('metric') or p.get('Metric')
+            value = p.get('value') or p.get('Value')
+            row = {'id': _next_measurement_id, 'athlete_id': aid, 'date': date, 'metric': metric, 'value': value}
+            _inmem_measurements = pd.concat([_inmem_measurements, pd.DataFrame([row])], ignore_index=True)
+            _next_measurement_id += 1
+            return
+
+        # executemany style: sometimes code uses session.execute with many rows via loop — handled above per call
+        # UPDATE / CREATE TABLE / other statements: ignore (no-op)
+        return
+
+    def executemany(self, sql, param_list):
+        for p in param_list:
+            self.execute(sql, params=p)
+
+    def commit(self):
+        return
+
+class InMemoryConnWrapper:
+    @property
+    def session(self):
+        return InMemorySession()
+
+    def query(self, sql, params=None):
+        s = (sql or "").strip().lower()
+        # SELECT * FROM athletes
+        if 'from athletes' in s:
+            return _inmem_athletes.copy()
+        if 'from measurements' in s:
+            return _inmem_measurements.copy()
+        # Fallback: try to detect simple where athlete_id IN (...) by numeric tuple in SQL
+        # Very simple parser for queries like "select * from measurements where athlete_id in (1,2,3)"
+        if 'from measurements' in s and 'where' in s:
+            # attempt to extract athlete_id values
+            m = re.search(r'athlete_id\s+in\s*\(([^)]+)\)', s)
+            if m:
+                vals = [int(x.strip()) for x in m.group(1).split(',') if x.strip().isdigit()]
+                return _inmem_measurements[_inmem_measurements['athlete_id'].isin(vals)].copy()
+        # default empty DF
+        return pd.DataFrame()
+
+# Instantiate global conn used by app
+conn = InMemoryConnWrapper()
+# Provide a simple 'text' passthrough to satisfy code using text(...)
+def text(s):
+    return s
+# ---------------------------
+# End of in-memory stub
+# ---------------------------
+
 class InMemoryConn:
     def __init__(self, athletes_df, measurements_df):
         self._athletes = athletes_df.copy()
