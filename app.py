@@ -14,6 +14,34 @@ SPORTS = {
     'biathlon': 'Биатлон',
     'rowing': 'Академическая гребля'
 }
+# safe_snowflake_check (вставьте в top app.py перед import snowflake.connector usage)
+import streamlit as st
+
+USE_SNOWFLAKE = False
+if "snowflake" in st.secrets:
+    try:
+        import snowflake.connector  # попытка импортировать
+        # попытка открыть тестовое соединение (без парсинга ошибок подробно)
+        sf = st.secrets["snowflake"]
+        conn = snowflake.connector.connect(
+            user=sf["user"],
+            password=sf["password"],
+            account=sf["account"],
+            warehouse=sf["warehouse"],
+            database=sf["database"],
+            schema=sf["schema"],
+            role=sf.get("role")
+        )
+        conn.close()
+        USE_SNOWFLAKE = True
+    except Exception as e:
+        # не падаем — включаем режим sqlite и показываем уведомление в UI
+        USE_SNOWFLAKE = False
+        st.warning("Snowflake недоступен (ошибка соединения или неправильные креды). Переходим в локальный режим SQLite.")
+else:
+    # секретов нет — переключаемся на SQLite
+    USE_SNOWFLAKE = False
+    # НЕ используйте st.error/st.stop здесь — иначе импорт завершится с ошибкой до UI
 
 # ---------- Snowflake helpers ----------
 def get_snowflake_connection():
