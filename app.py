@@ -660,47 +660,41 @@ else:
                         st.error("Нет доступа для обновления")
 
         st.subheader("Визуализации")
-     def visualize_average_metrics(user_info):
+   @st.cache_data
+def visualize_average_metrics(user_info):
     data = get_measurements(user_info)
     if data.empty:
         return None
 
-    # Удобный локатор имён колонок: ищет первый совпадающий вариант
+    # helper: найти реальные имена колонок в DataFrame
     def find_col(df, *candidates):
         cols = [c.lower() for c in df.columns]
         for c in candidates:
             if c is None:
                 continue
             if c.lower() in cols:
-                # вернуть оригинальное имя из df.columns
-                idx = cols.index(c.lower())
-                return list(df.columns)[idx]
+                return list(df.columns)[cols.index(c.lower())]
         return None
 
     date_col = find_col(data, 'date', 'Date', '"Date"')
-    athlete_col = find_col(data, 'athlete_id', 'Athlete_ID', 'Athlete_Id', 'athlete')
+    athlete_col = find_col(data, 'athlete_id', 'Athlete_ID', 'Athlete_Id', 'Athlete')
     metric_col = find_col(data, 'metric', 'Metric')
     value_col = find_col(data, 'value', 'Value')
 
     if not all([date_col, athlete_col, metric_col, value_col]):
-        # Не хватает необходимых столбцов — вернуть None, не падать
         return None
 
-    # Приводим даты
     data[date_col] = pd.to_datetime(data[date_col], errors='coerce')
     data = data.dropna(subset=[date_col])
     if data.empty:
         return None
 
-    # безопасная группировка: idxmax с dropna
     try:
         idx = data.groupby([athlete_col, metric_col])[date_col].idxmax().dropna().astype(int)
         latest = data.loc[idx]
     except Exception:
-        # Если что-то пошло не так — аккуратно выйти
         return None
 
-    # Пивот (если нет — вернём None)
     try:
         pivot = latest.pivot(index=athlete_col, columns=metric_col, values=value_col)
     except Exception:
@@ -708,7 +702,6 @@ else:
     if pivot.empty:
         return None
 
-    # Получаем колонку "вид спорта" из таблицы спортсменов (гибко по именам)
     athletes_df_local = get_athlete_data(user_info)
     sport_col = find_col(athletes_df_local, 'Вид спорта', 'вид спорта', 'sport', '"Вид спорта"')
     id_col = find_col(athletes_df_local, 'id', 'ID')
@@ -716,30 +709,25 @@ else:
     if sport_col is None or id_col is None:
         return None
 
-    # Подготовить таблицу со спортом по id
     athletes_with_sport = athletes_df_local[[id_col, sport_col]].set_index(id_col)
 
-    # Подключаем (join) — быть готовым, если индексы не совпадают
     try:
         combined = pivot.join(athletes_with_sport, how='left')
     except Exception:
         return None
 
-    # выбрать имя колонки спорта в combined (может быть разное имя)
-    sport_col_in_combined = sport_col if sport_col in combined.columns else None
-    if sport_col_in_combined is None:
-        # попробуем найти столбец с "вид" в имени
-        sport_col_candidates = [c for c in combined.columns if 'вид' in str(c).lower() or 'sport' in str(c).lower()]
-        sport_col_in_combined = sport_col_candidates[0] if sport_col_candidates else None
+    # найти колонку вида спорта в combined
+    sport_col_in_combined = sport_col if sport_col in combined.columns else (
+        [c for c in combined.columns if 'вид' in str(c).lower() or 'sport' in str(c).lower()][0]
+        if any('вид' in str(c).lower() or 'sport' in str(c).lower() for c in combined.columns) else None
+    )
     if sport_col_in_combined is None:
         return None
 
-    # Рассчитать средние по виду спорта
     try:
         averages = combined.groupby(sport_col_in_combined).mean(numeric_only=True)
     except Exception:
         return None
-
     if averages.empty:
         return None
 
@@ -751,4 +739,3 @@ else:
     plt.xticks(rotation=45)
     plt.tight_layout()
     return fig
-
