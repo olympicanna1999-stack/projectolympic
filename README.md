@@ -5,7 +5,6 @@
 Содержимое репозитория:
 - app.py — основной код Streamlit
 - requirements.txt — зависимости
-- .streamlit/secrets.toml.example — пример секретов для Snowflake
 - Dockerfile — (опционально)
 
 Тестовые учётные записи (demo):
