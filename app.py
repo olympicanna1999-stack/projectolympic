@@ -194,14 +194,7 @@ if st.session_state['user'] is None:
         if user:
             st.session_state['user'] = user
             st.session_state['login_attempt'] = True
-            # безопасный rerun: используем RerunException если доступен, иначе st.experimental_set_query_params + st.stop
-            if RerunException is not None:
-                raise RerunException
-            else:
-                # установка параметра запроса и остановка текущего запуска — простой обход
-                st.experimental_set_query_params(logged_in='1')
-                st.stop()
-        else:
+             else:
             st.sidebar.error("Неверные учетные данные")
     st.sidebar.markdown("---")
     st.sidebar.markdown("Тестовые учётки (демо):")
