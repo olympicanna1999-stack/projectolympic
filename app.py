@@ -10,11 +10,33 @@ from reportlab.lib.utils import ImageReader
 from io import BytesIO
 import base64
 
-# --------------------------------------------------
-# NOTE: предполагается, что `conn` и `text` определены
-# (например, SQLAlchemy wrapper). Если нет — добавьте
-# подключение к вашей БД перед использованием ниже.
-# --------------------------------------------------
+class InMemoryConn:
+    def __init__(self, athletes_df, measurements_df):
+        self._athletes = athletes_df.copy()
+        self._measurements = measurements_df.copy()
+
+    @property
+    def session(self):
+        # заглушка: предоставляет контекст-менеджер с пустыми commit/execute
+        class DummySession:
+            def __enter__(self_inner): return self_inner
+            def __exit__(self_inner, exc_type, exc, tb): return False
+            def execute(self_inner, *args, **kwargs): pass
+            def executemany(self_inner, *args, **kwargs): pass
+            def commit(self_inner): pass
+        return DummySession()
+
+    def query(self, sql, params=None):
+        # минимальная поддержка SELECT * FROM athletes / measurements
+        sql_low = sql.strip().lower()
+        if 'from athletes' in sql_low:
+            return self._athletes.copy()
+        if 'from measurements' in sql_low:
+            return self._measurements.copy()
+        return pd.DataFrame()
+
+# Использование:
+# conn = InMemoryConn(athletes_df, measurements_df)
 
 # Create tables if not exist
 with conn.session as session:
