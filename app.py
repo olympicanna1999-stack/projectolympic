@@ -445,7 +445,7 @@ if st.session_state.user_info is None:
     username = st.text_input("Логин")
     password = st.text_input("Пароль", type="password")
     if st.button("Войти"):
-        user_info = Noneif username in users and users[username]['password'] == password:
+        user_info = None if username in users and users[username]['password'] == password:
             user_info = users[username]
         if user_info:
             st.session_state.user_info = user_info
