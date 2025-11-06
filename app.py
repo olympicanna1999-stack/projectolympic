@@ -9,11 +9,6 @@ from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from io import BytesIO
 import base64
-from sqlalchemy import text
-
-# Database setup using Streamlit's SQLConnection
-# Assume secrets.toml has [connections.postgresql] with dbname, user, password, host, port
-conn = st.connection('postgresql', type='sql')
 
 # Create tables if not exist
 with conn.session as session:
