@@ -514,12 +514,6 @@ else:
 
         # Reports
         st.subheader("Отчеты")
-        if st.button("Сгенерировать PDF"):
-            pdf_buffer = generate_pdf_report(selected_athlete_id)
-            if pdf_buffer:
-                b64 = base64.b64encode(pdf_buffer.read()).decode()
-                href = f'<a href="data:application/pdf;base64,{b64}" download="athlete_{selected_athlete_id}_report.pdf">Скачать PDF</a>'st.markdown(href, unsafe_allow_html=True)
-
-        if st.button("Экспорт данных в CSV"):
+              if st.button("Экспорт данных в CSV"):
             csv = meas_data.to_csv(index=False).encode('utf-8')
             st.download_button("Скачать CSV", csv, "measurements.csv", "text/csv")
