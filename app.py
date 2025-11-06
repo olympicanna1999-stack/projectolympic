@@ -444,9 +444,7 @@ if 'user_info' not in st.session_state:
 if st.session_state.user_info is None:
     username = st.text_input("Логин")
     password = st.text_input("Пароль", type="password")
-    if st.button("Войти"):
-        user_info = None if username in users and users[username]['password'] == password:
-            user_info = users[username]
+    if st.button("Войти"):user_info = users[username] if username in users and users[username]['password'] == password else None
         if user_info:
             st.session_state.user_info = user_info
             st.success("Успешный вход!")
@@ -487,9 +485,11 @@ else:
             st.rerun()
 
         # Select athlete
-        selected_athlete_id = st.selectbox("Выберите спортсмена по ID", athletes_data['id'].unique(), key="athlete_select")
+        st.session_state.selected_athlete_id = st.selectbox("Выберите спортсмена по ID", athletes_data['id'].unique(), key="athlete_select")
 
-    if selected_athlete_id:
+    if 'selected_athlete_id' in st.session_state:
+        selected_athlete_id = st.session_state.selected_athlete_id
+
         with right_col:
             st.subheader("Детали спортсмена")
             athlete_details = get_athlete_data(user_info, selected_athlete_id)
@@ -539,8 +539,7 @@ else:
             pdf_buffer = generate_pdf_report(selected_athlete_id)
             if pdf_buffer:
                 b64 = base64.b64encode(pdf_buffer.read()).decode()
-                href = f'<a href="data:application/pdf;base64,{b64}" download="athlete_{selected_athlete_id}_report.pdf">Скачать PDF</a>'
-                st.markdown(href, unsafe_allow_html=True)
+                href = f'<a href="data:application/pdf;base64,{b64}" download="athlete_{selected_athlete_id}_report.pdf">Скачать PDF</a>'st.markdown(href, unsafe_allow_html=True)
 
         if st.button("Экспорт данных в CSV"):
             csv = meas_data.to_csv(index=False).encode('utf-8')
