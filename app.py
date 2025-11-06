@@ -7,7 +7,7 @@ import sqlite3
 from faker import Faker
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ---------- Константы ----------
 SPORTS = {
@@ -18,7 +18,14 @@ SPORTS = {
 
 DB_FILE = 'athletes.db'
 
-# ---------- SQLite helper ----------
+# ---------- Безопасный доступ к RerunException ----------
+try:
+    # Streamlit internal exception to request rerun
+    from streamlit.runtime.scriptrunner import RerunException
+except Exception:
+    RerunException = None
+
+# ---------- SQLite helpers ----------
 def ensure_tables_sqlite():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cs = conn.cursor()
@@ -78,7 +85,7 @@ def execute_sqlite(sql, params=None):
 def seed_if_empty_sqlite():
     ensure_tables_sqlite()
     df = query_df_sqlite("SELECT COUNT(*) AS cnt FROM users")
-    if df['cnt'].iloc[0] > 0:
+    if int(df['cnt'].iloc[0]) > 0:
         return
 
     fake = Faker('ru_RU')
@@ -100,7 +107,7 @@ def seed_if_empty_sqlite():
         for _ in range(15):
             first = fake.first_name()
             last = fake.last_name()
-            by = random.choice(birth_years)
+            by = int(random.choice(birth_years))
             sex = random.choice(['M','F'])
             region = fake.region()
             best = f"{random.randint(1,10)} место на юнош. первенстве"
@@ -111,7 +118,7 @@ def seed_if_empty_sqlite():
             hr_rest = random.randint(30,70)
             hr_max = random.randint(160,210)
             sv = round(random.uniform(50,120),1)
-            created_at = datetime.utcnow().isoformat()
+            created_at = datetime.now(timezone.utc).isoformat()
             execute_sqlite(
                 "INSERT INTO athletes (first_name,last_name,birth_year,sex,sport,region,best_result,vo2max,max_strength,lean_mass,pano,hr_rest,hr_max,stroke_volume,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -120,13 +127,15 @@ def seed_if_empty_sqlite():
 
 # ---------- Authentication ----------
 def authenticate_sqlite(username, password):
+    if not username or not password:
+        return None
     df = query_df_sqlite("SELECT * FROM users WHERE username=? AND password=?", (username, password))
     if df.shape[0] == 0:
         return None
     row = df.iloc[0]
     return {'id': int(row.id), 'username': row.username, 'role': row.role, 'sport': row.sport}
 
-# ---------- PDF ----------
+# ---------- PDF generation ----------
 def generate_pdf_bytes_sqlite(sport_key, df_athletes):
     buf = io.BytesIO()
     p = canvas.Canvas(buf, pagesize=A4)
@@ -137,7 +146,11 @@ def generate_pdf_bytes_sqlite(sport_key, df_athletes):
     p.setFont("Helvetica", 10)
     y -= 30
     for _, a in df_athletes.iterrows():
-        line = f"{a['last_name']} {a['first_name']}, {int(a['birth_year'])}, Регион: {a.get('region','')}"
+        last = a.get('last_name')
+        first = a.get('first_name')
+        by = int(a.get('birth_year') or 0)
+        region = a.get('region','')
+        line = f"{last} {first}, {by}, Регион: {region}"
         p.drawString(40, y, line)
         y -= 14
         sub = (f"МПК: {a.get('vo2max')}  Сила: {a.get('max_strength')}  БМ: {a.get('lean_mass')}  "
@@ -148,52 +161,6 @@ def generate_pdf_bytes_sqlite(sport_key, df_athletes):
             p.showPage()
             y = h - 40
             p.setFont("Helvetica", 10)
-            # Сессия пользователя
-if 'user' not in st.session_state:
-    st.session_state['user'] = None
-if 'just_logged_in' not in st.session_state:
-    st.session_state['just_logged_in'] = False
-
-# Вход
-if st.session_state['user'] is None:
-    st.sidebar.header("Вход")
-    username = st.sidebar.text_input("Логин")
-    password = st.sidebar.text_input("Пароль", type="password")
-    if st.sidebar.button("Войти"):
-        user = authenticate_sqlite(username.strip(), password.strip())
-        if user:
-            st.session_state['user'] = user
-            st.session_state['just_logged_in'] = True
-            try:
-                st.experimental_rerun()
-            except Exception:
-                # В случае внутренней ошибки Streamlit продолжаем без rerun
-                pass
-        else:
-            st.sidebar.error("Неверные учетные данные")
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("Тестовые учётки (демо):")
-    st.sidebar.write("- leader / leaderpass")
-    st.sidebar.write("- curator_ski / curpass1")
-    st.sidebar.write("- curator_biathlon / curpass2")
-    st.sidebar.write("- curator_rowing / curpass3")
-    st.sidebar.write("- coach_ski / coach1")
-    st.stop()
-
-# После успешного входа (если мы попали сюда после rerun) сбрасываем флаг
-if st.session_state.get('just_logged_in'):
-    st.session_state['just_logged_in'] = False
-
-user = st.session_state['user']
-st.sidebar.success(f"Выполнен вход: {user['username']} ({user['role']})")
-
-# Кнопка выхода
-if st.sidebar.button("Выйти"):
-    st.session_state['user'] = None
-    try:
-        st.experimental_rerun()
-    except Exception:
-        pass
     p.showPage()
     p.save()
     buf.seek(0)
@@ -214,6 +181,8 @@ with st.spinner("Инициализация локальной базы данн
 # Сессия пользователя
 if 'user' not in st.session_state:
     st.session_state['user'] = None
+if 'login_attempt' not in st.session_state:
+    st.session_state['login_attempt'] = False
 
 # Вход
 if st.session_state['user'] is None:
@@ -224,7 +193,14 @@ if st.session_state['user'] is None:
         user = authenticate_sqlite(username.strip(), password.strip())
         if user:
             st.session_state['user'] = user
-            st.experimental_rerun()
+            st.session_state['login_attempt'] = True
+            # безопасный rerun: используем RerunException если доступен, иначе st.experimental_set_query_params + st.stop
+            if RerunException is not None:
+                raise RerunException
+            else:
+                # установка параметра запроса и остановка текущего запуска — простой обход
+                st.experimental_set_query_params(logged_in='1')
+                st.stop()
         else:
             st.sidebar.error("Неверные учетные данные")
     st.sidebar.markdown("---")
@@ -234,17 +210,26 @@ if st.session_state['user'] is None:
     st.sidebar.write("- curator_biathlon / curpass2")
     st.sidebar.write("- curator_rowing / curpass3")
     st.sidebar.write("- coach_ski / coach1")
+    # прерываем дальнейшее выполнение пока пользователь не вошёл
     st.stop()
 
+# Если мы здесь — пользователь авторизован
 user = st.session_state['user']
 st.sidebar.success(f"Выполнен вход: {user['username']} ({user['role']})")
+
+# Кнопка выхода
 if st.sidebar.button("Выйти"):
     st.session_state['user'] = None
-    st.experimental_rerun()
+    # безопасный rerun при выходе
+    if RerunException is not None:
+        raise RerunException
+    else:
+        st.experimental_set_query_params(logged_in='0')
+        st.stop()
 
 page = st.sidebar.radio("Раздел", ["Dashboard", "Список спортсменов", "Паспорт спортсмена", "Генерация отчёта"])
 
-def load_athletes_for_user_sqlite(u):
+def load_athletes_for_user(u):
     if u['role'] == 'leader':
         return query_df_sqlite("SELECT * FROM athletes ORDER BY sport, last_name")
     elif u['role'] == 'curator':
@@ -269,8 +254,15 @@ if page == "Dashboard":
         st.write("Полный реестр доступен в 'Список спортсменов'")
     elif user['role'] == 'curator':
         st.write(f"Куратор вида: {SPORTS.get(user['sport'])}")
-        df = load_athletes_for_user_sqlite(user)
-        st.dataframe(df[['id','last_name','first_name','birth_year','region']])
+        df = load_athletes_for_user(user)
+        # нормализуем имена столбцов для отображения
+        if not df.empty:
+            display_df = df.rename(columns={
+                'id':'ID','last_name':'Фамилия','first_name':'Имя','birth_year':'Год'
+            })
+            st.dataframe(display_df[['Фамилия','Имя','Год','region']].head(100))
+        else:
+            st.info("Нет данных.")
     else:
         st.write(f"Тренер вида: {SPORTS.get(user['sport'])}")
         st.info("Тренерам прямой доступ к персональным данным закрыт. Для получения отчёта обратитесь к куратору или руководителю.")
@@ -278,7 +270,7 @@ if page == "Dashboard":
 # Список спортсменов
 if page == "Список спортсменов":
     st.header("Список спортсменов")
-    df = load_athletes_for_user_sqlite(user)
+    df = load_athletes_for_user(user)
     if df.empty:
         st.info("Нет данных для отображения в рамках вашей роли.")
     else:
