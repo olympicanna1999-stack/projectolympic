@@ -148,6 +148,52 @@ def generate_pdf_bytes_sqlite(sport_key, df_athletes):
             p.showPage()
             y = h - 40
             p.setFont("Helvetica", 10)
+            # Сессия пользователя
+if 'user' not in st.session_state:
+    st.session_state['user'] = None
+if 'just_logged_in' not in st.session_state:
+    st.session_state['just_logged_in'] = False
+
+# Вход
+if st.session_state['user'] is None:
+    st.sidebar.header("Вход")
+    username = st.sidebar.text_input("Логин")
+    password = st.sidebar.text_input("Пароль", type="password")
+    if st.sidebar.button("Войти"):
+        user = authenticate_sqlite(username.strip(), password.strip())
+        if user:
+            st.session_state['user'] = user
+            st.session_state['just_logged_in'] = True
+            try:
+                st.experimental_rerun()
+            except Exception:
+                # В случае внутренней ошибки Streamlit продолжаем без rerun
+                pass
+        else:
+            st.sidebar.error("Неверные учетные данные")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("Тестовые учётки (демо):")
+    st.sidebar.write("- leader / leaderpass")
+    st.sidebar.write("- curator_ski / curpass1")
+    st.sidebar.write("- curator_biathlon / curpass2")
+    st.sidebar.write("- curator_rowing / curpass3")
+    st.sidebar.write("- coach_ski / coach1")
+    st.stop()
+
+# После успешного входа (если мы попали сюда после rerun) сбрасываем флаг
+if st.session_state.get('just_logged_in'):
+    st.session_state['just_logged_in'] = False
+
+user = st.session_state['user']
+st.sidebar.success(f"Выполнен вход: {user['username']} ({user['role']})")
+
+# Кнопка выхода
+if st.sidebar.button("Выйти"):
+    st.session_state['user'] = None
+    try:
+        st.experimental_rerun()
+    except Exception:
+        pass
     p.showPage()
     p.save()
     buf.seek(0)
