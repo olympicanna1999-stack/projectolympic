@@ -437,29 +437,6 @@ if st.session_state.theme == 'Тёмная':
 else:
     st.markdown(light_theme, unsafe_allow_html=True)
 
-# Authentication
-if 'user_info' not in st.session_state:
-    st.session_state.user_info = None
-
-if st.session_state.user_info is None:
-    username = st.text_input("Логин")
-    password = st.text_input("Пароль", type="password")
-    if st.button("Войти"):user_info = users[username] 
-        if username in users and users[username]['password'] == password 
-        else None
-        if user_info:
-            st.session_state.user_info = user_info
-            st.success("Успешный вход!")
-            st.rerun()
-        else:
-            st.error("Неверный логин или пароль")
-else:
-    user_info = st.session_state.user_info
-    st.sidebar.markdown(f"**Пользователь:** {user_info['role']}")
-    if st.sidebar.button("Выйти"):
-        st.session_state.user_info = None
-        st.rerun()
-
     # Sidebar filters
     st.sidebar.title("Фильтры")
     search_name = st.sidebar.text_input("Поиск по имени")
