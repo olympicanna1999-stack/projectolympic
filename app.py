@@ -1,332 +1,405 @@
-# app.py
 import streamlit as st
 import pandas as pd
-import io
 import random
-import sqlite3
-from faker import Faker
-from reportlab.lib.pagesizes import A4
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-from datetime import datetime, timezone
+from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
+from io import BytesIO
+import base64
 
-# ---------- Константы ----------
-SPORTS = {
-    'ski': 'Лыжные гонки',
-    'biathlon': 'Биатлон',
-    'rowing': 'Академическая гребля'
+# Mock data generation
+sports = ['Лыжные гонки', 'Биатлон', 'Академическая гребля']
+
+# Russian names (first and last)
+first_names_male = ['Александр', 'Дмитрий', 'Иван', 'Максим', 'Никита', 'Сергей', 'Артем', 'Егор', 'Кирилл', 'Михаил']
+last_names_male = ['Иванов', 'Петров', 'Сидоров', 'Кузнецов', 'Смирнов', 'Попов', 'Васильев', 'Михайлов', 'Новиков', 'Федоров']
+first_names_female = ['Анастасия', 'Мария', 'София', 'Анна', 'Дарья', 'Виктория', 'Елизавета', 'Полина', 'Ксения', 'Екатерина']
+last_names_female = ['Иванова', 'Петрова', 'Сидорова', 'Кузнецова', 'Смирнова', 'Попова', 'Васильева', 'Михайлова', 'Новикова', 'Федорова']
+
+def generate_russian_name(gender='male'):
+    if gender == 'male':
+        return random.choice(first_names_male) + ' ' + random.choice(last_names_male)
+    else:
+        return random.choice(first_names_female) + ' ' + random.choice(last_names_female)
+
+# Generate mock athletes: 15 per sport, mixed gender, age 14-18
+athletes = []
+athlete_id = 1
+for sport in sports:
+    for _ in range(15):
+        gender = random.choice(['male', 'female'])
+        name = generate_russian_name(gender)
+        age = random.randint(14, 18)
+        athletes.append({
+            'ID': athlete_id,
+            'Имя': name,
+            'Возраст': age,
+            'Вид спорта': sport,
+        })
+        athlete_id += 1
+
+# Create DataFrame for athletes basic info
+athletes_df = pd.DataFrame(athletes)
+
+# Generate mock historical measurements: 4 per athlete over the past year
+measurements = []
+metrics_list = ['МПК', 'Максимальная сила', 'Безжировая масса тела', 'ПАНО', 'ЧСС в покое', 'Максимальная ЧСС', 'Ударный объем сердца']
+ranges = {
+    'МПК': (50, 80),
+    'Максимальная сила': (100, 300),
+    'Безжировая масса тела': (40, 80),
+    'ПАНО': (3.5, 5.5),
+    'ЧСС в покое': (50, 70),
+    'Максимальная ЧСС': (180, 220),
+    'Ударный объем сердца': (100, 200)
+}
+today = datetime.now()
+for aid in athletes_df['ID']:
+    for i in range(4):  # 4 measurements
+        date = today - timedelta(days=random.randint(30*i, 30*(i+1) + 30))
+        for metric in metrics_list:
+            base_value = random.uniform(ranges[metric][0], ranges[metric][1])
+            # Simulate progress: slight improvement over time
+            progress_factor = 1 + (0.05 * (3 - i))  # Newer measurements better
+            value = round(base_value * progress_factor, 1) if metric not in ['ЧСС в покое', 'Максимальная ЧСС'] else int(base_value * progress_factor)
+            # For HR, lower resting is better, but for simplicity, random
+            if metric == 'ЧСС в покое':
+                value = int(base_value * (1 - 0.05 * (3 - i)))  # Decrease over time
+            measurements.append({
+                'Athlete_ID': aid,
+                'Date': date.date(),
+                'Metric': metric,
+                'Value': value
+            })
+
+# Create DataFrame for measurements (long format)
+measurements_df = pd.DataFrame(measurements)
+
+# User roles and access
+users = {
+    'project_leader': {'password': 'admin_pass', 'role': 'leader'},  # Full access
+    'curator_ski_racing': {'password': 'ski_pass', 'role': 'curator', 'sport': 'Лыжные гонки'},
+    'curator_biathlon': {'password': 'biathlon_pass', 'role': 'curator', 'sport': 'Биатлон'},
+    'curator_rowing': {'password': 'rowing_pass', 'role': 'curator', 'sport': 'Академическая гребля'}
 }
 
-DB_FILE = 'athletes.db'
+# Function to get athlete basic data based on role
+def get_athlete_data(user_info, athlete_id=None):
+    if user_info['role'] == 'leader':
+        if athlete_id:
+            return athletes_df[athletes_df['ID'] == athlete_id]
+        return athletes_df
+    elif user_info['role'] == 'curator':
+        sport = user_info['sport']
+        filtered = athletes_df[athletes_df['Вид спорта'] == sport]
+        if athlete_id:
+            return filtered[filtered['ID'] == athlete_id]
+        return filtered
+    return pd.DataFrame()
 
-# ---------- Безопасный доступ к RerunException ----------
-try:
-    # Streamlit internal exception to request rerun
-    from streamlit.runtime.scriptrunner import RerunException
-except Exception:
-    RerunException = None
+# Function to get measurements based on role
+def get_measurements(user_info, athlete_id=None):
+    if user_info['role'] == 'leader':
+        if athlete_id:
+            return measurements_df[measurements_df['Athlete_ID'] == athlete_id]
+        return measurements_df
+    elif user_info['role'] == 'curator':
+        sport = user_info['sport']
+        athlete_ids = athletes_df[athletes_df['Вид спорта'] == sport]['ID']
+        filtered = measurements_df[measurements_df['Athlete_ID'].isin(athlete_ids)]
+        if athlete_id:
+            return filtered[filtered['Athlete_ID'] == athlete_id]
+        return filtered
+    return pd.DataFrame()
 
-# ---------- SQLite helpers ----------
-def ensure_tables_sqlite():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cs = conn.cursor()
-    cs.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          username TEXT,
-          role TEXT,
-          sport TEXT,
-          password TEXT
-        )
-    """)
-    cs.execute("""
-        CREATE TABLE IF NOT EXISTS athletes (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          first_name TEXT,
-          last_name TEXT,
-          birth_year INTEGER,
-          sex TEXT,
-          sport TEXT,
-          region TEXT,
-          best_result TEXT,
-          vo2max REAL,
-          max_strength REAL,
-          lean_mass REAL,
-          pano REAL,
-          hr_rest INTEGER,
-          hr_max INTEGER,
-          stroke_volume REAL,
-          created_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+# Function to update measurements (add new entry)
+def add_measurement(user_info, athlete_id, date, updates):
+    if user_info['role'] == 'leader' or (user_info['role'] == 'curator' and athletes_df.loc[athletes_df['ID'] == athlete_id, 'Вид спорта'].values[0] == user_info['sport']):
+        new_rows = []
+        for metric, value in updates.items():
+            if metric in metrics_list:
+                new_rows.append({'Athlete_ID': athlete_id, 'Date': date, 'Metric': metric, 'Value': value})
+        global measurements_df
+        measurements_df = pd.concat([measurements_df, pd.DataFrame(new_rows)], ignore_index=True)
+        return True
+    return False
 
-def query_df_sqlite(sql, params=None):
-    params = params or ()
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    try:
-        df = pd.read_sql_query(sql, conn, params=params)
-        return df
-    finally:
-        conn.close()
-
-def execute_sqlite(sql, params=None):
-    params = params or ()
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cs = conn.cursor()
-    try:
-        cs.execute(sql, params)
-        conn.commit()
-    finally:
-        cs.close()
-        conn.close()
-
-# ---------- Seed mock data ----------
-def seed_if_empty_sqlite():
-    ensure_tables_sqlite()
-    df = query_df_sqlite("SELECT COUNT(*) AS cnt FROM users")
-    if int(df['cnt'].iloc[0]) > 0:
-        return
-
-    fake = Faker('ru_RU')
-    demo_users = [
-        ('leader', 'leader', None, 'leaderpass'),
-        ('curator_ski', 'curator', 'ski', 'curpass1'),
-        ('curator_biathlon', 'curator', 'biathlon', 'curpass2'),
-        ('curator_rowing', 'curator', 'rowing', 'curpass3'),
-        ('coach_ski', 'coach', 'ski', 'coach1'),
-        ('coach_biathlon', 'coach', 'biathlon', 'coach2'),
-        ('coach_rowing', 'coach', 'rowing', 'coach3')
-    ]
-    for uname, role, sport, pwd in demo_users:
-        execute_sqlite("INSERT INTO users (username, role, sport, password) VALUES (?,?,?,?)",
-                       (uname, role, sport, pwd))
-
-    birth_years = [2007,2008,2009,2010,2006]
-    for sport_key in SPORTS.keys():
-        for _ in range(15):
-            first = fake.first_name()
-            last = fake.last_name()
-            by = int(random.choice(birth_years))
-            sex = random.choice(['M','F'])
-            region = fake.region()
-            best = f"{random.randint(1,10)} место на юнош. первенстве"
-            vo2 = round(random.uniform(45,80),1)
-            ms = round(random.uniform(40,200),1)
-            lm = round(random.uniform(40,80),1)
-            pano = round(random.uniform(3,8),2)
-            hr_rest = random.randint(30,70)
-            hr_max = random.randint(160,210)
-            sv = round(random.uniform(50,120),1)
-            created_at = datetime.now(timezone.utc).isoformat()
-            execute_sqlite(
-                "INSERT INTO athletes (first_name,last_name,birth_year,sex,sport,region,best_result,vo2max,max_strength,lean_mass,pano,hr_rest,hr_max,stroke_volume,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (first,last,by,sex,sport_key,region,best,vo2,ms,lm,pano,hr_rest,hr_max,sv,created_at)
-            )
-
-# ---------- Authentication ----------
-def authenticate_sqlite(username, password):
-    if not username or not password:
+# Function to visualize average metrics per sport or overall (latest measurements)
+@st.cache_data
+def visualize_average_metrics(user_info):
+    data = get_measurements(user_info)
+    if data.empty:
         return None
-    df = query_df_sqlite("SELECT * FROM users WHERE username=? AND password=?", (username, password))
-    if df.shape[0] == 0:
+    
+    # Get latest date per athlete per metric
+    latest = data.loc[data.groupby(['Athlete_ID', 'Metric'])['Date'].idxmax()]
+    pivot = latest.pivot(index='Athlete_ID', columns='Metric', values='Value')
+    athletes_with_sport = athletes_df.set_index('ID')[['Вид спорта']]
+    combined = pivot.join(athletes_with_sport)
+    averages = combined.groupby('Вид спорта').mean()
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    averages.plot(kind='bar', ax=ax)
+    ax.set_title('Средние показатели по видам спорта (последние измерения)')
+    ax.set_ylabel('Значения')
+    ax.set_xlabel('Вид спорта')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
+
+# Function to visualize individual athlete metrics as a radar chart (latest)
+@st.cache_data
+def visualize_athlete_metrics(user_info, athlete_id):
+    data = get_measurements(user_info, athlete_id)
+    if data.empty:
         return None
-    row = df.iloc[0]
-    return {'id': int(row.id), 'username': row.username, 'role': row.role, 'sport': row.sport}
+    
+    # Get latest measurements
+    latest = data.loc[data.groupby('Metric')['Date'].idxmax()]
+    values = latest.set_index('Metric')['Value']
+    
+    metrics = metrics_list
+    vals = [values.get(m, 0) for m in metrics]
+    
+    # Normalize
+    normalized = [(v - ranges[m][0]) / (ranges[m][1] - ranges[m][0]) for m, v in zip(metrics, vals)]
+    
+    angles = [n / float(len(metrics)) * 2 * 3.14159 for n in range(len(metrics))]
+    angles += angles[:1]
+    normalized += normalized[:1]
+    
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    ax.fill(angles, normalized, color='blue', alpha=0.25)
+    ax.plot(angles, normalized, color='blue', linewidth=2)
+    ax.set_yticklabels([])
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(metrics, fontsize=10)
+    athlete_name = athletes_df[athletes_df['ID'] == athlete_id]['Имя'].values[0]
+    ax.set_title(f"Показатели спортсмена {athlete_name} (последние)")
+    plt.tight_layout()
+    return fig
 
-# ---------- PDF generation ----------
-def generate_pdf_bytes_sqlite(sport_key, df_athletes):
-    buf = io.BytesIO()
-    p = canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
-    y = h - 40
-    p.setFont("Helvetica-Bold", 14)
-    p.drawString(40, y, f"Отчёт по виду спорта: {SPORTS.get(sport_key,sport_key)}")
-    p.setFont("Helvetica", 10)
-    y -= 30
-    for _, a in df_athletes.iterrows():
-        last = a.get('last_name')
-        first = a.get('first_name')
-        by = int(a.get('birth_year') or 0)
-        region = a.get('region','')
-        line = f"{last} {first}, {by}, Регион: {region}"
-        p.drawString(40, y, line)
-        y -= 14
-        sub = (f"МПК: {a.get('vo2max')}  Сила: {a.get('max_strength')}  БМ: {a.get('lean_mass')}  "
-               f"ПАНО: {a.get('pano')}  ЧСС пок: {int(a.get('hr_rest') or 0)}  ЧСС макс: {int(a.get('hr_max') or 0)}  УО: {a.get('stroke_volume')}")
-        p.drawString(56, y, sub)
-        y -= 18
-        if y < 80:
-            p.showPage()
-            y = h - 40
-            p.setFont("Helvetica", 10)
-    p.showPage()
-    p.save()
-    buf.seek(0)
-    return buf.read()
+# Function: Visualize progress over time for an athlete
+@st.cache_data
+def visualize_progress(user_info, athlete_id):
+    data = get_measurements(user_info, athlete_id)
+    if data.empty:
+        return None
+    
+    fig, axs = plt.subplots(len(metrics_list), 1, figsize=(10, 15), sharex=True)
+    fig.suptitle(f'Прогресс спортсмена ID {athlete_id} со временем')
+    
+    for i, metric in enumerate(metrics_list):
+        metric_data = data[data['Metric'] == metric].sort_values('Date')
+        if not metric_data.empty:
+            axs[i].plot(metric_data['Date'], metric_data['Value'], marker='o')
+            axs[i].set_ylabel(metric)
+            axs[i].grid(True)
+    
+    axs[-1].set_xlabel('Дата')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
 
-# ---------- UI ----------
-st.set_page_config(page_title="Реестр олимпийского резерва (Demo)", layout="wide")
-st.title("Цифровой реестр / Паспорт спортсмена — demo (SQLite)")
+# Function to generate PDF report
+def generate_pdf_report(athlete_id):
+    athlete = athletes_df[athletes_df['ID'] == athlete_id]
+    if athlete.empty:
+        return None
+    
+    athlete = athlete.iloc[0]
+    pdf_buffer = BytesIO()
+    c = canvas.Canvas(pdf_buffer, pagesize=letter)
+    width, height = letter
+    
+    # Title
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(1*inch, height - 1*inch, "Паспорт спортсмена")
+    
+    # Athlete info
+    c.setFont("Helvetica", 12)
+    y = height - 1.5*inch
+    c.drawString(1*inch, y, f"ID: {athlete['ID']}")
+    y -= 0.5*inch
+    c.drawString(1*inch, y, f"Имя: {athlete['Имя']}")
+    y -= 0.5*inch
+    c.drawString(1*inch, y, f"Возраст: {athlete['Возраст']}")
+    y -= 0.5*inch
+    c.drawString(1*inch, y, f"Вид спорта: {athlete['Вид спорта']}")
+    y -= 0.5*inch
+    
+    # Latest physical metrics
+    latest_data = measurements_df[measurements_df['Athlete_ID'] == athlete_id].loc[measurements_df[measurements_df['Athlete_ID'] == athlete_id].groupby('Metric')['Date'].idxmax()]
+    c.drawString(1*inch, y, "Последние показатели физического тестирования:")
+    y -= 0.5*inch
+    for _, row in latest_data.iterrows():
+        c.drawString(1.5*inch, y, f"{row['Metric']}: {row['Value']} (Дата: {row['Date']})")
+        y -= 0.3*inch
+    
+    # Save the PDF
+    c.save()
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
-# Инициализация БД и seed
-with st.spinner("Инициализация локальной базы данных..."):
-    try:
-        seed_if_empty_sqlite()
-    except Exception as e:
-        st.error("Ошибка инициализации локальной БД: " + str(e))
-        st.stop()
+# Custom CSS for themes
+light_theme = """
+    <style>
+        .stApp {
+            background-color: white;
+            color: black;
+        }
+        .stButton > button {
+            background-color: #f0f0f0;
+            color: black;
+        }
+        /* Add more styles as needed */
+    </style>
+"""
 
-# Сессия пользователя
-if 'user' not in st.session_state:
-    st.session_state['user'] = None
-if 'login_attempt' not in st.session_state:
-    st.session_state['login_attempt'] = False
+dark_theme = """
+    <style>
+        .stApp {
+            background-color: #121212;
+            color: white;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: white;
+        }
+        .stButton > button {
+            background-color: #333333;
+            color: white;
+        }
+        .stTextInput > div > div > input {
+            background-color: #333333;
+            color: white;
+        }
+        .stNumberInput > div > div > input {
+            background-color: #333333;
+            color: white;
+        }
+        .stDateInput > div > div > input {
+            background-color: #333333;
+            color: white;
+        }
+        .stSelectbox > div > div > div {
+            background-color: #333333;
+            color: white;
+        }
+        /* Dataframe styles */
+        .dataframe {
+            color: white;
+        }
+        /* Add more styles for dark theme */
+    </style>
+"""
 
-# Вход
-if st.session_state['user'] is None:
-    st.sidebar.header("Вход")
-    username = st.sidebar.text_input("Логин")
-    password = st.sidebar.text_input("Пароль", type="password")
-    if st.sidebar.button("Войти"):
-        user = authenticate_sqlite(username.strip(), password.strip())
-        if user:
-            st.session_state['user'] = user
-            st.session_state['login_attempt'] = True
-             else:
-            st.sidebar.error("Неверные учетные данные")
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("Тестовые учётки (демо):")
-    st.sidebar.write("- leader / leaderpass")
-    st.sidebar.write("- curator_ski / curpass1")
-    st.sidebar.write("- curator_biathlon / curpass2")
-    st.sidebar.write("- curator_rowing / curpass3")
-    st.sidebar.write("- coach_ski / coach1")
-    # прерываем дальнейшее выполнение пока пользователь не вошёл
-    st.stop()
+# Streamlit app
+st.title("Цифровой реестр и паспорт спортсмена")
 
-# Если мы здесь — пользователь авторизован
-user = st.session_state['user']
-st.sidebar.success(f"Выполнен вход: {user['username']} ({user['role']})")
+# Theme selection in sidebar
+if 'theme' not in st.session_state:
+    st.session_state.theme = 'Светлая'
 
-# Кнопка выхода
-if st.sidebar.button("Выйти"):
-    st.session_state['user'] = None
-    # безопасный rerun при выходе
-    if RerunException is not None:
-        raise RerunException
-    else:
-        st.experimental_set_query_params(logged_in='0')
-        st.stop()
+st.sidebar.title("Настройки")
+theme_choice = st.sidebar.radio("Тема интерфейса", ['Светлая', 'Тёмная'])
+if theme_choice != st.session_state.theme:
+    st.session_state.theme = theme_choice
+    st.rerun()
 
-page = st.sidebar.radio("Раздел", ["Dashboard", "Список спортсменов", "Паспорт спортсмена", "Генерация отчёта"])
+# Apply theme
+if st.session_state.theme == 'Тёмная':
+    st.markdown(dark_theme, unsafe_allow_html=True)
+else:
+    st.markdown(light_theme, unsafe_allow_html=True)
 
-def load_athletes_for_user(u):
-    if u['role'] == 'leader':
-        return query_df_sqlite("SELECT * FROM athletes ORDER BY sport, last_name")
-    elif u['role'] == 'curator':
-        return query_df_sqlite("SELECT * FROM athletes WHERE sport=? ORDER BY last_name", (u['sport'],))
-    else:
-        return query_df_sqlite("SELECT id, first_name, last_name, birth_year, sport FROM athletes WHERE sport=? ORDER BY last_name", (u['sport'],))
+# Authentication
+if 'user_info' not in st.session_state:
+    st.session_state.user_info = None
 
-# Dashboard
-if page == "Dashboard":
-    st.header("Панель управления (демо)")
-    if user['role'] == 'leader':
-        counts = {}
-        for s in SPORTS.keys():
-            dfc = query_df_sqlite("SELECT COUNT(*) AS cnt FROM athletes WHERE sport=?", (s,))
-            counts[s] = int(dfc['cnt'].iloc[0])
-        cols = st.columns(3)
-        i = 0
-        for s, name in SPORTS.items():
-            cols[i].metric(name, counts[s])
-            i += 1
-        st.markdown("---")
-        st.write("Полный реестр доступен в 'Список спортсменов'")
-    elif user['role'] == 'curator':
-        st.write(f"Куратор вида: {SPORTS.get(user['sport'])}")
-        df = load_athletes_for_user(user)
-        # нормализуем имена столбцов для отображения
-        if not df.empty:
-            display_df = df.rename(columns={
-                'id':'ID','last_name':'Фамилия','first_name':'Имя','birth_year':'Год'
-            })
-            st.dataframe(display_df[['Фамилия','Имя','Год','region']].head(100))
+if st.session_state.user_info is None:
+    username = st.text_input("Логин")
+    password = st.text_input("Пароль", type="password")
+    if st.button("Войти"):
+        user_info = None
+        if username in users and users[username]['password'] == password:
+            user_info = users[username]
+        if user_info:
+            st.session_state.user_info = user_info
+            st.success("Успешный вход!")
+            st.rerun()
         else:
-            st.info("Нет данных.")
-    else:
-        st.write(f"Тренер вида: {SPORTS.get(user['sport'])}")
-        st.info("Тренерам прямой доступ к персональным данным закрыт. Для получения отчёта обратитесь к куратору или руководителю.")
+            st.error("Неверный логин или пароль")
+else:
+    user_info = st.session_state.user_info
+    st.sidebar.markdown(f"**Пользователь:** {user_info['role']}")
+    if st.sidebar.button("Выйти"):
+        st.session_state.user_info = None
+        st.rerun()
 
-# Список спортсменов
-if page == "Список спортсменов":
-    st.header("Список спортсменов")
-    df = load_athletes_for_user(user)
-    if df.empty:
-        st.info("Нет данных для отображения в рамках вашей роли.")
-    else:
-        if user['role'] == 'coach':
-            st.dataframe(df[['id','last_name','first_name','birth_year']])
-        else:
-            st.dataframe(df)
+    # Use tabs for better organization
+    tab1, tab2, tab3, tab4 = st.tabs(["Список спортсменов", "Измерения и обновления", "Визуализации", "Отчеты"])
 
-# Паспорт спортсмена
-if page == "Паспорт спортсмена":
-    st.header("Паспорт спортсмена")
-    athlete_id = st.number_input("Введите ID спортсмена", min_value=1, step=1)
-    if st.button("Загрузить паспорт"):
-        try:
-            df = query_df_sqlite("SELECT * FROM athletes WHERE id=?", (athlete_id,))
-            if df.shape[0] == 0:
-                st.error("Спортсмен не найден")
-            else:
-                a = df.iloc[0].to_dict()
-                sport_key = a.get('sport')
-                if user['role'] == 'leader' or (user['role'] == 'curator' and user['sport'] == sport_key):
-                    st.subheader(f"{a.get('last_name')} {a.get('first_name')}, {int(a.get('birth_year') or 0)}")
-                    st.write("Регион:", a.get('region',''))
-                    st.write("Вид спорта:", SPORTS.get(sport_key, sport_key))
-                    with st.form("edit_form"):
-                        best = st.text_input("Лучший результат", value=a.get('best_result',''))
-                        vo2 = st.text_input("МПК", value=str(a.get('vo2max','')))
-                        maxs = st.text_input("Макс сила", value=str(a.get('max_strength','')))
-                        lm = st.text_input("Безжировая масса", value=str(a.get('lean_mass','')))
-                        pano = st.text_input("ПАНО", value=str(a.get('pano','')))
-                        hr_rest = st.text_input("ЧСС в покое", value=str(a.get('hr_rest','')))
-                        hr_max = st.text_input("Макс ЧСС", value=str(a.get('hr_max','')))
-                        sv = st.text_input("Ударный объём", value=str(a.get('stroke_volume','')))
-                        submitted = st.form_submit_button("Сохранить")
-                        if submitted:
-                            try:
-                                execute_sqlite(
-                                    "UPDATE athletes SET best_result=?, vo2max=?, max_strength=?, lean_mass=?, pano=?, hr_rest=?, hr_max=?, stroke_volume=? WHERE id=?",
-                                    (best, float(vo2 or 0), float(maxs or 0), float(lm or 0), float(pano or 0),
-                                     int(hr_rest or 0), int(hr_max or 0), float(sv or 0), athlete_id)
-                                )
-                                st.success("Паспорт обновлён")
-                            except Exception as ee:
-                                st.error("Ошибка при сохранении: " + str(ee))
-                else:
-                    st.error("У вас нет права просматривать/редактировать паспорт этого спортсмена")
-        except Exception as e:
-            st.error("Ошибка: " + str(e))
+    with tab1:
+        st.subheader("Список спортсменов")
+        athletes_data = get_athlete_data(user_info)
+        st.dataframe(athletes_data.style.set_table_styles([{'selector': 'tr:hover', 'props': [('background-color', '#f5f5f5' if st.session_state.theme == 'Светлая' else '#333333')]}]))
 
-# Генерация отчёта
-if page == "Генерация отчёта":
-    st.header("Генерация PDF отчёта по виду спорта")
-    sport_choice = st.selectbox("Выберите вид спорта", list(SPORTS.keys()), format_func=lambda k: SPORTS[k])
-    if st.button("Сгенерировать PDF"):
-        if user['role'] == 'coach':
-            st.error("У тренера нет права генерировать отчёты. Обратитесь к куратору или руководителю.")
-        elif user['role'] == 'curator' and user['sport'] != sport_choice:
-            st.error("Куратор может генерировать отчёт только по своему виду спорта.")
-        else:
-            try:
-                df = query_df_sqlite("SELECT * FROM athletes WHERE sport=? ORDER BY last_name", (sport_choice,))
-                pdf_bytes = generate_pdf_bytes_sqlite(sport_choice, df)
-                st.success("Отчёт сгенерирован")
-                st.download_button("Скачать PDF", data=pdf_bytes, file_name=f"report_{sport_choice}.pdf", mime="application/pdf")
-            except Exception as e:
-                st.error("Ошибка генерации отчёта: " + str(e))
+        # Select athlete for other tabs
+        st.session_state.selected_athlete_id = st.selectbox("Выберите спортсмена по ID", athletes_data['ID'].unique(), key="athlete_select")
+
+    if 'selected_athlete_id' in st.session_state:
+        athlete_id = st.session_state.selected_athlete_id
+
+        with tab2:
+            if athlete_id:
+                # Measurements
+                meas_data = get_measurements(user_info, athlete_id)
+                st.subheader("Измерения")
+                st.dataframe(meas_data)
+
+                # Add new measurement with expander
+                with st.expander("Добавить новые измерения"):
+                    new_date = st.date_input("Дата")
+                    updates = {}
+                    cols = st.columns(2)
+                    for i, metric in enumerate(metrics_list):
+                        with cols[i % 2]:
+                            value = st.number_input(f"{metric}", value=0.0)
+                            if value != 0.0:
+                                updates[metric] = value
+                    if st.button("Добавить"):
+                        if add_measurement(user_info, athlete_id, new_date, updates):
+                            st.success("Измерения добавлены!")
+                            st.rerun()
+                        else:
+                            st.error("Нет доступа для обновления")
+
+        with tab3:
+            if athlete_id:
+                st.subheader("Визуализация среднего по видам спорта")
+                avg_fig = visualize_average_metrics(user_info)
+                if avg_fig:
+                    st.pyplot(avg_fig)
+
+                st.subheader("Визуализация показателей спортсмена (радар)")
+                athlete_fig = visualize_athlete_metrics(user_info, athlete_id)
+                if athlete_fig:
+                    st.pyplot(athlete_fig)
+
+                st.subheader("Визуализация прогресса")
+                progress_fig = visualize_progress(user_info, athlete_id)
+                if progress_fig:
+                    st.pyplot(progress_fig)
+
+        with tab4:
+            if athlete_id:
+                st.subheader("Генерация PDF-отчета")
+                if st.button("Сгенерировать PDF"):
+                    pdf_buffer = generate_pdf_report(athlete_id)
+                    if pdf_buffer:
+                        b64 = base64.b64encode(pdf_buffer.read()).decode()
+                        href = f'<a href="data:application/pdf;base64,{b64}" download="athlete_{athlete_id}_report.pdf">Скачать PDF</a>'
+                        st.markdown(href, unsafe_allow_html=True)
