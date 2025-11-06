@@ -149,35 +149,44 @@ def visualize_average_metrics(user_info):
     plt.xticks(rotation=45)
     plt.tight_layout()
     return fig
-
 # Function to visualize individual athlete metrics as a radar chart (latest)
 @st.cache_data
 def visualize_athlete_metrics(user_info, athlete_id):
     data = get_measurements(user_info, athlete_id)
     if data.empty:
         return None
-    
-    # Get latest measurements
-    latest = data.loc[data.groupby('Metric')['Date'].idxmax()]
-    values = latest.set_index('Metric')['Value']
-    
+
+    # Get latest measurements (safe: handle possible NaT / missing idx)
+    idx = data.groupby('Metric')['Date'].idxmax()
+    idx = idx.dropna().astype(int)
+    latest = data.loc[idx]
+    values = latest.set_index('Metric')['Value'].to_dict()
+
     metrics = metrics_list
     vals = [values.get(m, 0) for m in metrics]
-    
-    # Normalize
-    normalized = [(v - ranges[m][0]) / (ranges[m][1] - ranges[m][0]) for m, v in zip(metrics, vals)]
-    
+
+    # Normalize with safe denominator (avoid division by zero)
+    normalized = []
+    for m, v in zip(metrics, vals):
+        mn, mx = ranges.get(m, (0, 1))
+        denom = (mx - mn) if (mx - mn) != 0 else 1
+        normalized.append((v - mn) / denom)
+
+    # Prepare angles for radar (close the polygon)
     angles = [n / float(len(metrics)) * 2 * 3.14159 for n in range(len(metrics))]
     angles += angles[:1]
     normalized += normalized[:1]
-    
+
     fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
     ax.fill(angles, normalized, color='blue', alpha=0.25)
     ax.plot(angles, normalized, color='blue', linewidth=2)
     ax.set_yticklabels([])
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(metrics, fontsize=10)
-    athlete_name = athletes_df[athletes_df['ID'] == athlete_id]['Имя'].values[0]
+
+    # Safe athlete name lookup
+    names = athletes_df.loc[athletes_df['ID'] == athlete_id, 'Имя'].values
+    athlete_name = names[0] if len(names) > 0 else f"ID {athlete_id}"
     ax.set_title(f"Показатели спортсмена {athlete_name} (последние)")
     plt.tight_layout()
     return fig
@@ -188,27 +197,71 @@ def visualize_progress(user_info, athlete_id):
     data = get_measurements(user_info, athlete_id)
     if data.empty:
         return None
-    
+
     fig, axs = plt.subplots(len(metrics_list), 1, figsize=(10, 15), sharex=True)
     fig.suptitle(f'Прогресс спортсмена ID {athlete_id} со временем')
-    
+
     for i, metric in enumerate(metrics_list):
         metric_data = data[data['Metric'] == metric].sort_values('Date')
         if not metric_data.empty:
             axs[i].plot(metric_data['Date'], metric_data['Value'], marker='o')
             axs[i].set_ylabel(metric)
             axs[i].grid(True)
-    
+        else:
+            axs[i].set_ylabel(metric)
+            axs[i].text(0.5, 0.5, "Нет данных", ha='center', va='center', transform=axs[i].transAxes)
+
     axs[-1].set_xlabel('Дата')
-    plt.xticks(rotation=45)
+    plt.setp(axs[-1].xaxis.get_majorticklabels(), rotation=45)
     plt.tight_layout()
     return fig
 
-# Function to generate PDF report
+# Function to generate PDF report (beginning)
 def generate_pdf_report(athlete_id):
     athlete = athletes_df[athletes_df['ID'] == athlete_id]
     if athlete.empty:
         return None
+
+    athlete = athlete.iloc[0]
+    pdf_buffer = BytesIO()
+    c = canvas.Canvas(pdf_buffer, pagesize=letter)
+    width, height = letter
+
+    # Title and athlete info
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(1*inch, height - 1*inch, "Паспорт спортсмена")
+    c.setFont("Helvetica", 12)
+    y = height - 1.5*inch
+    c.drawString(1*inch, y, f"ID: {athlete['ID']}")
+    y -= 0.4*inch
+    c.drawString(1*inch, y, f"Имя: {athlete['Имя']}")
+    y -= 0.4*inch
+    c.drawString(1*inch, y, f"Возраст: {athlete['Возраст']}")
+    y -= 0.4*inch
+    c.drawString(1*inch, y, f"Вид спорта: {athlete['Вид спорта']}")
+    y -= 0.5*inch
+
+    # Latest physical metrics (safe selection)
+    a_measurements = measurements_df[measurements_df['Athlete_ID'] == athlete_id]
+    if not a_measurements.empty:
+        latest_idx = a_measurements.groupby('Metric')['Date'].idxmax().dropna().astype(int)
+        latest_data = a_measurements.loc[latest_idx]
+        c.drawString(1*inch, y, "Последние показатели физического тестирования:")
+        y -= 0.4*inch
+        for _, row in latest_data.iterrows():
+            line = f"{row['Metric']}: {row['Value']} (Дата: {row['Date']})"
+            c.drawString(1.2*inch, y, line)
+            y -= 0.3*inch
+            if y < 1*inch:
+                c.showPage()
+                y = height - 1*inch
+    else:
+        c.drawString(1*inch, y, "Данных по измерениям не найдено.")
+        y -= 0.3*inch
+
+    c.save()
+    pdf_buffer.seek(0)
+    return pdf_buffer
     
     athlete = athlete.iloc[0]
     pdf_buffer = BytesIO()
