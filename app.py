@@ -511,9 +511,3 @@ else:
             progress_fig = visualize_progress(user_info, selected_athlete_id)
             if progress_fig:
                 st.pyplot(progress_fig)
-
-        # Reports
-        st.subheader("Отчеты")
-              if st.button("Экспорт данных в CSV"):
-            csv = meas_data.to_csv(index=False).encode('utf-8')
-            st.download_button("Скачать CSV", csv, "measurements.csv", "text/csv")
